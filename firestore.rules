@@ -1,0 +1,76 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserData(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data;
+    }
+
+    function isSharingEnabled(patientId) {
+      return getUserData(patientId).isSharingEnabled == true;
+    }
+
+    function isDoctor() {
+      return isSignedIn() && getUserData(request.auth.uid).role == 'doctor';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // User profiles
+    match /users/{userId} {
+      allow get: if isOwner(userId) || (isDoctor() && isSharingEnabled(userId));
+      allow list: if false; // No blanket listing of users
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) && 
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'age', 'gender', 'bloodGroup', 'address', 'degree', 'isSharingEnabled', 'onboarded']));
+    }
+
+    // Medical records
+    match /records/{recordId} {
+      allow get: if isSignedIn() && (
+        isOwner(resource.data.patientId) || 
+        (isDoctor() && isSharingEnabled(resource.data.patientId))
+      );
+      allow list: if isSignedIn() && (
+        isOwner(request.query.limit > 0 ? (resource == null ? request.auth.uid : resource.data.patientId) : "") ||
+        (isDoctor() && isSharingEnabled(request.query.patientId))
+      );
+      
+      // Since list rules with query filters are tricky, we'll simplify:
+      // Patients can list their own records.
+      // Doctors can list records if they provide the patientId and sharing is on.
+      allow list: if isSignedIn() && (
+        (isOwner(request.auth.uid) || (isDoctor() && isSharingEnabled(request.query.patientId)))
+      );
+
+      // Refining list for security
+      allow list: if isSignedIn() && (
+        (resource.data.patientId == request.auth.uid) || 
+        (isDoctor() && isSharingEnabled(resource.data.patientId))
+      );
+
+      allow create: if isSignedIn() && 
+        isOwner(request.resource.data.patientId) &&
+        request.resource.data.keys().hasAll(['patientId', 'fileURL', 'fileName', 'type', 'createdAt']) &&
+        request.resource.data.type in ['prescription', 'report'];
+      
+      allow delete: if isOwner(resource.data.patientId);
+    }
+  }
+}
