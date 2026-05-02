@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Bot, Send, X, MessageSquare, Loader2, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getGeminiChat } from '../services/gemini';
+import { getGeminiInstance, SYSTEM_INSTRUCTION } from '../services/gemini';
 import { useAuth } from '../context/AuthContext';
 
 interface Message {
@@ -17,7 +17,6 @@ export default function AIChatBox() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const { user } = useAuth();
-  const chatRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -27,12 +26,6 @@ export default function AIChatBox() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
-
-  useEffect(() => {
-    if (isOpen && !chatRef.current) {
-      chatRef.current = getGeminiChat();
-    }
-  }, [isOpen]);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,18 +37,37 @@ export default function AIChatBox() {
     setIsLoading(true);
 
     try {
-      if (!chatRef.current) {
-        chatRef.current = getGeminiChat();
-      }
+      const ai = getGeminiInstance();
+      
+      // Convert history to Gemini format
+      const history = messages.map(m => ({
+        role: m.role,
+        parts: [{ text: m.text }]
+      }));
 
-      const result = await chatRef.current.sendMessage({
-        message: userMessage,
+      // Add the current user message
+      history.push({
+        role: 'user',
+        parts: [{ text: userMessage }]
       });
 
-      setMessages(prev => [...prev, { role: 'model', text: result.text }]);
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: history,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION,
+        }
+      });
+
+      const responseText = result.text || "I'm sorry, I couldn't generate a response.";
+      setMessages(prev => [...prev, { role: 'model', text: responseText }]);
     } catch (error) {
       console.error('Gemini error:', error);
-      setMessages(prev => [...prev, { role: 'model', text: 'Sorry, I encountered an error. Please try again later.' }]);
+      let errorMessage = 'Sorry, I encountered an error. Please try again later.';
+      if (error instanceof Error && error.message.includes('GEMINI_API_KEY')) {
+        errorMessage = 'AI features are currently unavailable. (API Key not configured)';
+      }
+      setMessages(prev => [...prev, { role: 'model', text: errorMessage }]);
     } finally {
       setIsLoading(false);
     }
